@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Secrets and local config – never commit
+.env
+*.kubeconfig
+kubeconfig*
+
+# macOS / editors
+.DS_Store
+.vscode/
+.idea/
