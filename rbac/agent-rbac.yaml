@@ -1,0 +1,58 @@
+# Read-only identity for the AIOps agent.
+# Apply once with an admin kubeconfig: kubectl apply -f rbac/agent-rbac.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aiops-agent # where the agent's identity lives
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aiops-lab # broken test scenarios go here; Argo CD doesn't manage it
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aiops-agent
+  namespace: aiops-agent
+---
+# Built-in "view" role: read pods, logs, events, deployments, services ... in every namespace.
+# It cannot read Secrets and cannot change anything.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aiops-agent-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - kind: ServiceAccount
+    name: aiops-agent
+    namespace: aiops-agent
+---
+# "view" leaves out cluster-wide objects; the agent needs them for "Pending" and "PVC" problems.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aiops-agent-cluster-read
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aiops-agent-cluster-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aiops-agent-cluster-read
+subjects:
+  - kind: ServiceAccount
+    name: aiops-agent
+    namespace: aiops-agent
