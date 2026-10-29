@@ -97,6 +97,13 @@ def test_kubectl_error_comes_back_as_text(monkeypatch):
     assert kubectl.describe("pod", "xyz", "study-rag") == 'ERROR: Error from server (NotFound): pods "xyz" not found'
 
 
+def test_kubectl_error_keeps_only_the_last_line(monkeypatch):
+    noise = 'E1029 memcache.go:265] "Unhandled Error" err="couldn\'t get current server API group list"\n' * 5
+    message = "The connection to the server 127.0.0.1:56648 was refused - did you specify the right host or port?"
+    monkeypatch.setattr(kubectl.subprocess, "run", FakeKubectl(stdout="", stderr=noise + message, returncode=1))
+    assert kubectl.get_resources("pods", "study-rag") == f"ERROR: {message}"
+
+
 def test_no_resources_message_from_stderr_is_returned(monkeypatch):
     fake = FakeKubectl(stdout="", stderr="No resources found in aiops-lab namespace.\n")
     monkeypatch.setattr(kubectl.subprocess, "run", fake)
