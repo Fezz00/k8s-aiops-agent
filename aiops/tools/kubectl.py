@@ -87,7 +87,9 @@ def run_kubectl(args: list[str]) -> str:
     except FileNotFoundError:
         return "ERROR: kubectl is not installed"
     if result.returncode != 0:
-        return f"ERROR: {result.stderr.strip()}"
+        # kubectl often repeats low-level lines before the real message; the last line is the one that matters
+        lines = result.stderr.strip().splitlines() or ["kubectl failed without a message"]
+        return f"ERROR: {lines[-1]}"
     # "No resources found" goes to stderr with exit code 0
     output = result.stdout.strip() or result.stderr.strip() or "(no output)"
     return truncate(output, config.MAX_OUTPUT_CHARS)
