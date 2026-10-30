@@ -6,6 +6,9 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 
+# Eval output (full agent conversations, can contain cluster details)
+eval/results/
+
 # Secrets and local config – never commit
 .env
 *.kubeconfig

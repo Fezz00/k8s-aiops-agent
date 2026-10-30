@@ -91,6 +91,51 @@ def test_get_logs_tail_is_limited(fake, asked, used):
     assert f"--tail={used}" in fake.last_cmd
 
 
+class LogsByVariant:
+    """Fake kubectl that answers differently for the previous and the current container's log."""
+
+    def __init__(self, previous_log, current_log):
+        self.previous_log, self.current_log = previous_log, current_log
+        self.calls = []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append(cmd)
+        out = self.previous_log if "--previous" in cmd else self.current_log
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+
+UNAVAILABLE = "unable to retrieve container logs for containerd://a31be50a"
+
+
+def test_get_logs_falls_back_to_current_log(monkeypatch):
+    fake = LogsByVariant(previous_log=UNAVAILABLE, current_log="Error: You must specify POSTGRES_PASSWORD")
+    monkeypatch.setattr(kubectl.subprocess, "run", fake)
+    result = kubectl.get_logs("orders-db-1", "aiops-lab", previous=True)
+    assert "POSTGRES_PASSWORD" in result
+    assert "showing the current container's log instead" in result
+    assert len(fake.calls) == 2 and "--previous" not in fake.calls[1]
+
+
+def test_get_logs_falls_back_to_previous_log(monkeypatch):
+    fake = LogsByVariant(previous_log="Error: You must specify POSTGRES_PASSWORD", current_log=UNAVAILABLE)
+    monkeypatch.setattr(kubectl.subprocess, "run", fake)
+    result = kubectl.get_logs("orders-db-1", "aiops-lab")
+    assert "POSTGRES_PASSWORD" in result
+    assert "showing the previous (crashed) container's log instead" in result
+
+
+def test_get_logs_without_problem_calls_kubectl_once(monkeypatch):
+    fake = LogsByVariant(previous_log="old log", current_log="current log")
+    monkeypatch.setattr(kubectl.subprocess, "run", fake)
+    assert kubectl.get_logs("orders-db-1", "aiops-lab", previous=True) == "old log"
+    assert len(fake.calls) == 1
+
+
+def test_get_logs_keeps_message_when_both_logs_are_unavailable(monkeypatch):
+    monkeypatch.setattr(kubectl.subprocess, "run", LogsByVariant(UNAVAILABLE, UNAVAILABLE))
+    assert kubectl.get_logs("orders-db-1", "aiops-lab", previous=True) == UNAVAILABLE
+
+
 def test_kubectl_error_comes_back_as_text(monkeypatch):
     fake = FakeKubectl(stdout="", stderr='Error from server (NotFound): pods "xyz" not found\n', returncode=1)
     monkeypatch.setattr(kubectl.subprocess, "run", fake)

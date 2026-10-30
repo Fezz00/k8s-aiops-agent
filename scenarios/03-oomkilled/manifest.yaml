@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: report-generator
+  namespace: aiops-lab
+  labels: {aiops-scenario: "03"}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: report-generator}}
+  template:
+    metadata: {labels: {app: report-generator, aiops-scenario: "03"}}
+    spec:
+      containers:
+        - name: generator
+          image: busybox:1.37
+          # "tail /dev/zero" reads zeros without a line break and buffers them: memory grows until the limit
+          command: ["tail", "/dev/zero"]
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 32Mi}

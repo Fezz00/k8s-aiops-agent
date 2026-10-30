@@ -1,0 +1,6 @@
+question: "The web deployment in namespace aiops-lab doesn't start. Why?"
+wait_seconds: 30
+# The answer passes if it contains at least one keyword of every group (case-insensitive)
+must_mention:
+  - ["ImagePullBackOff", "ErrImagePull", "pull"] # what happens
+  - ["1.277", "not found", "does not exist", "doesn't exist"] # why: the tag doesn't exist

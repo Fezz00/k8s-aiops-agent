@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-db
+  namespace: aiops-lab
+  labels: {aiops-scenario: "02"}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: orders-db}}
+  template:
+    metadata: {labels: {app: orders-db, aiops-scenario: "02"}}
+    spec:
+      containers:
+        - name: postgres
+          # POSTGRES_PASSWORD is missing: the image's start script exits with an error.
+          # The reason is only in the log; describe only shows "Exit Code: 1".
+          image: postgres:17-alpine
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 256Mi}

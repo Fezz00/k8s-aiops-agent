@@ -1,0 +1,6 @@
+question: "The orders-db in namespace aiops-lab keeps failing. Why?"
+wait_seconds: 60 # includes pulling the postgres image the first time
+# The cause is only in the logs, not in describe: the agent has to call get_logs
+must_mention:
+  - ["CrashLoopBackOff", "crash", "restart", "exit", "fail"] # what happens ("fails to start" is correct too)
+  - ["POSTGRES_PASSWORD"] # why
