@@ -1,0 +1,5 @@
+question: "The report-generator in namespace aiops-lab keeps restarting. Why?"
+wait_seconds: 40
+must_mention:
+  - ["OOMKilled", "out of memory", "OOM"] # what happens
+  - ["limit", "32Mi"] # why: the memory limit is too small
