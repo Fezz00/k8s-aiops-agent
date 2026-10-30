@@ -44,6 +44,8 @@ _KIND_BY_ALIAS = {alias: kind for kind, aliases in KINDS.items() for alias in [k
 _NAME = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
 
 MAX_LOG_LINES = 500
+# What kubectl prints when a container's log is gone for a moment (while a crashing container is replaced)
+_LOGS_UNAVAILABLE = "unable to retrieve container logs"
 
 
 def _check_kind(kind: str) -> str:
@@ -131,11 +133,22 @@ def get_events(namespace: str | None = None) -> str:
 
 @_errors_as_text
 def get_logs(pod: str, namespace: str, container: str | None = None, previous: bool = False, tail: int = 100) -> str:
-    """Last log lines of a pod. previous=True: log of the container that crashed before the current one."""
+    """Last log lines of a pod. previous=True: log of the container that crashed before the current one.
+
+    While a crashing container is being replaced, one of the two logs can be briefly unavailable.
+    Then the other one is returned (with a note): it usually shows the same error. A small model
+    doesn't reliably retry by itself, so the code does it.
+    """
     tail = max(1, min(int(tail), MAX_LOG_LINES))
     args = ["logs", _check_name(pod, "pod"), "-n", _check_name(namespace, "namespace"), f"--tail={tail}"]
     if container is not None:
         args += ["-c", _check_name(container, "container")]
-    if previous:
-        args.append("--previous")
-    return run_kubectl(args)
+
+    result = run_kubectl(args + ["--previous"] if previous else args)
+    if _LOGS_UNAVAILABLE not in result:
+        return result
+    other = run_kubectl(args if previous else args + ["--previous"])
+    if _LOGS_UNAVAILABLE in other or other.startswith("ERROR"):
+        return result
+    which = "current" if previous else "previous (crashed)"
+    return f"(Requested log was not available right now; showing the {which} container's log instead.)\n{other}"
