@@ -6,24 +6,39 @@ An assistant that explains problems in a Kubernetes cluster. Ask it a question i
 - **Local LLM** – `qwen3:4b-instruct` via [Ollama](https://ollama.com) with tool calling; nothing leaves the machine.
 - **Read-only by design** – two layers: the code only offers fixed, checked tools, and the cluster gives the agent a ServiceAccount that can look but not change anything (and cannot read Secrets).
 
-> **Status:** Phase 2 done – read-only tools, agent loop and `aiops` CLI work against a real cluster. Next: broken test scenarios and an eval to measure answer quality (Phase 3).
+> **Status:** Phase 3 in progress – the agent finds the root cause in all 3 broken-cluster scenarios (15/15 runs, see [Evaluation](#evaluation)). Next: more scenarios, including a failure outside the cluster ([#3](https://github.com/Fezz00/k8s-aiops-agent/issues/3)).
 
 ## Example
 
+A Postgres database started without a password – the reason is only in its log:
+
 ```text
-$ aiops ask "Are all pods in namespace study-rag healthy?"
+$ aiops ask "The orders-db in namespace aiops-lab keeps failing. Why?"
 Investigating with qwen3:4b-instruct ...
-  → get_resources(kind=pods, namespace=study-rag)  [583 chars]
+  → get_resources(kind=pods, namespace=aiops-lab)  [238 chars]
+  → describe(kind=pods, name=orders-db-55848c975-5gmvn, namespace=aiops-lab)  [3090 chars]
+  → get_events(namespace=aiops-lab)  [6031 chars]
+  → get_logs(pod=orders-db-55848c975-5gmvn, namespace=aiops-lab, previous=True, tail=100)  [567 chars]
 
-**Problem:** ...
-**Cause:** ...
-**Evidence:** ...
-**Fix:** ...
+**Problem:** The orders-db pod is failing to start because the PostgreSQL superuser password
+is not specified in the environment variables.
 
-(1 tool calls, 10.2 s)
+**Cause:** The container's startup logs show that the `POSTGRES_PASSWORD` environment variable
+is missing or empty. PostgreSQL requires a password for the superuser to initialize the database.
+
+**Evidence:** The logs show:
+> Error: Database is uninitialized and superuser password is not specified.
+> You must specify POSTGRES_PASSWORD to a non-empty value...
+
+**Fix:** Add `POSTGRES_PASSWORD` to the orders-db deployment, e.g.
+    env:
+      - name: POSTGRES_PASSWORD
+        value: "your_secure_password"
+
+(4 tool calls, 14.5 s)
 ```
 
-Every tool call is printed while the agent works (`-v` also prints the full tool output), then the answer in a fixed format: Problem, Cause, Evidence, Fix. The fix is a suggestion for you – the agent never runs it.
+Every tool call is printed while the agent works (`-v` also prints the full tool output), then the answer in a fixed format: Problem, Cause, Evidence, Fix. The fix is a suggestion for you – the agent never runs it. (Answer from an eval run, slightly shortened.)
 
 ## How it works
 
@@ -49,7 +64,7 @@ Errors from tools come back as text (`ERROR: pods "xyz" not found`) instead of e
 | `get_resources(kind, namespace?)` | `kubectl get <kind> -o wide` | Overview: status, READY, restarts |
 | `describe(kind, name, namespace?)` | `kubectl describe` | Probes, limits, conditions, recent events (OOMKilled, ImagePullBackOff …) |
 | `get_events(namespace?)` | `kubectl get events --sort-by=.lastTimestamp` | What happened, newest last |
-| `get_logs(pod, namespace, container?, previous?, tail?)` | `kubectl logs` | `previous=true`: the log of the container that crashed |
+| `get_logs(pod, namespace, container?, previous?, tail?)` | `kubectl logs` | `previous=true`: the log of the container that crashed. If that log is gone, the other one is returned (see [lessons](#what-the-eval-showed)) |
 
 ### Read-only in two layers
 
@@ -82,6 +97,38 @@ aiops ask "Why is the app in namespace aiops-lab not working?"
 
 Before each run, `aiops` checks that the cluster is reachable with the agent's kubeconfig and that Ollama runs with the model, and prints what to do if not.
 
+## Evaluation
+
+[`scenarios/`](scenarios/) holds broken workloads, each with the question for the agent and the keywords a correct answer must contain. [`eval/run_eval.py`](eval/run_eval.py) runs them against the real cluster:
+
+```mermaid
+flowchart LR
+    A[apply broken manifest<br/>as admin] --> W[wait until<br/>the failure shows] --> Q[agent investigates<br/>read-only] --> S[score the answer] --> D[delete the scenario]
+```
+
+Only the test harness changes the cluster (with the admin kubeconfig); the agent stays read-only even in tests. An answer passes if it names both *what* happens and *why* (at least one keyword of each group, e.g. `ImagePullBackOff` **and** `1.277`).
+
+| # | Scenario | What is broken | Where the cause is visible | Passed |
+|---|---|---|---|---|
+| 01 | ImagePullBackOff | Image tag typo `nginx:1.277` | `describe` / events | **5/5** |
+| 02 | CrashLoopBackOff | Postgres started without `POSTGRES_PASSWORD` | Only in the log | **5/5** |
+| 03 | OOMKilled | Memory limit 32Mi, the process keeps growing | `describe`: last state `OOMKilled` | **5/5** |
+
+`qwen3:4b-instruct`, 5 runs per scenario: 2–4 tool calls and about 13–20 s per answer, never at the step limit.
+
+```bash
+python -m eval.run_eval                  # all scenarios, 3 runs each, ~4 minutes
+python -m eval.run_eval --only 02 --runs 5
+```
+
+Each run saves the full conversations in `eval/results/` (git-ignored), so a score can be checked against what the model actually saw.
+
+### What the eval showed
+
+- **Read the transcripts, not only the score.** The first version of scenario 02 passed 3/3, but the error check was part of the container's start command, which `describe` shows – the model read the answer there and never needed the logs. Scenario 02 now uses a real image (Postgres) whose reason is only in the log.
+- **Grading mistakes count too.** One correct answer said "fails to start" and failed the "what happens" keywords (`crash`, `restart`, `exit`). `fail` now counts as well.
+- **Make the tools robust instead of hoping the model copes.** For a pod in CrashLoopBackOff, `kubectl logs --previous` returned `unable to retrieve container logs` in every run – most likely because Kubernetes keeps only one dead container per pod, and that one is the "current" container. The model sometimes retried without `previous`, sometimes gave up (scenario 02: 2/3). `get_logs` now falls back to the other log by itself: 5/5.
+
 ## Configuration
 
 All settings are environment variables ([`aiops/config.py`](aiops/config.py)).
@@ -100,14 +147,15 @@ All settings are environment variables ([`aiops/config.py`](aiops/config.py)).
 
 ```bash
 ruff check .
-pytest -v      # 42 tests, no cluster and no Ollama needed
+pytest -v      # 50 tests, no cluster and no Ollama needed
 ```
 
-kubectl and the model are replaced by fakes: the tests check the commands that are built, that bad input is rejected, and that the loop feeds tool results back and stops at the step limit.
+kubectl and the model are replaced by fakes: the tests check the commands that are built, that bad input is rejected, the log fallback, the eval scoring, and that the loop feeds tool results back and stops at the step limit. The eval needs the cluster and Ollama, so it runs locally, not in tests.
 
 ## Known limitations
 
-- **The 4B model misreads restart counts.** `RESTARTS 9 (25m ago)` means 9 restarts since the pod was created and the last one 25 minutes ago; the model reads it as "9 restarts in 25 minutes" and calls a healthy pod unstable – even with a rule in the system prompt that explains it. Phase 3 measures fixes (tool output written for the model, `temperature 0`, bigger or thinking models) instead of guessing.
+- **The 4B model misreads restart counts.** `RESTARTS 9 (25m ago)` means 9 restarts since the pod was created and the last one 25 minutes ago; the model reads it as "9 restarts in 25 minutes" and calls a healthy pod unstable – even with a rule in the system prompt that explains it. Not covered by the eval yet (it needs a "healthy namespace" scenario); likely fix: tool output written for the model instead of kubectl's compact table.
+- **Keyword scoring can be fooled.** "This is not an image pull problem" still contains "pull". Good enough to compare versions; an LLM judge could replace it later.
 - **The model can't be the thing that is broken.** The test app [study-RAG](https://github.com/Fezz00/study-RAG) uses the same Ollama, so "Ollama is down" can only be tested with a second Ollama instance for the agent ([#3](https://github.com/Fezz00/k8s-aiops-agent/issues/3)).
 
 ## Project structure
@@ -123,6 +171,8 @@ aiops/
     ├── kubectl.py     # the 4 read-only tools and their input checks
     └── registry.py    # tool menu (JSON Schema) and run_tool()
 rbac/agent-rbac.yaml   # namespaces + read-only ServiceAccount
+scenarios/             # broken workloads: manifest.yaml + expected.yaml (question, keywords)
+eval/                  # run_eval.py (apply → ask → score → delete), scoring.py
 scripts/               # agent-kubeconfig.sh
 tests/                 # unit tests (pytest), with fake kubectl and fake model
 ```
@@ -134,7 +184,7 @@ tests/                 # unit tests (pytest), with fake kubectl and fake model
 | 0 Setup – repo, read-only ServiceAccount | ✅ |
 | 1 Tools – kubectl tools with input checks | ✅ |
 | 2 Agent – loop, Ollama client, CLI | ✅ |
-| 3 Scenarios + eval – broken workloads in `aiops-lab`, scored automatically | next |
+| 3 Scenarios + eval – broken workloads in `aiops-lab`, scored automatically | 3 scenarios ✅, more next |
 | 4 Prometheus – metric queries as a tool | |
 | 5 CI, UI / MCP server | |
 | 6 Tracing every run with Langfuse | |
